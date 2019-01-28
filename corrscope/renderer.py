@@ -33,6 +33,7 @@ if mpl_config_dir in os.environ:
 
 matplotlib.use("module://mplcairo.base")
 matplotlib.rcParams["agg.path.chunksize"] = 1000
+dict.__setitem__(matplotlib.rcParams, "lines.antialiased", False)
 from mplcairo.base import FigureCanvasCairo
 from matplotlib.figure import Figure
 
