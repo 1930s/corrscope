@@ -20,6 +20,7 @@ from corrscope.triggers import (
     CorrelationTriggerConfig,
     PerFrameCache,
     CorrelationTrigger,
+    SpectrumConfig,
 )
 from corrscope.util import pushd, coalesce
 from corrscope.wave import Wave, Flatten
@@ -127,6 +128,7 @@ def default_config(**kwargs) -> Config:
             responsiveness=0.5,
             buffer_falloff=0.5,
             use_edge_trigger=False,
+            pitch_invariance=SpectrumConfig()
             # Removed due to speed hit.
             # post=LocalPostTriggerConfig(strength=0.1),
         ),
@@ -272,13 +274,9 @@ class CorrScope:
                     self.renderer.render_frame(datas)
                     self.output.write_frame(self.renderer.get_frame())
 
-        extra_outputs.window = None
-        if "window" in internals:
-            extra_outputs.window = RenderOutput()
-
-        extra_outputs.buffer = None
-        if "buffer" in internals:
-            extra_outputs.buffer = RenderOutput()
+        extra_outputs.window = RenderOutput() if "window" in internals else None
+        extra_outputs.buffer = RenderOutput() if "buffer" in internals else None
+        extra_outputs.spectrum = RenderOutput() if "spectrum" in internals else None
         # endregion
 
         if PRINT_TIMESTAMP:
@@ -340,17 +338,22 @@ class CorrScope:
                     continue
 
                 # region Display buffers, for debugging purposes.
+                triggers = cast(List[CorrelationTrigger], self.triggers)
                 if extra_outputs.window:
-                    triggers = cast(List[CorrelationTrigger], self.triggers)
                     extra_outputs.window.render_frame(
                         [trigger._prev_window for trigger in triggers]
                     )
 
                 if extra_outputs.buffer:
-                    triggers = cast(List[CorrelationTrigger], self.triggers)
                     extra_outputs.buffer.render_frame(
                         [trigger._buffer for trigger in triggers]
                     )
+
+                if extra_outputs.spectrum:
+                    extra_outputs.spectrum.render_frame(
+                        [trigger._spectrum - 0.99 for trigger in triggers]
+                    )
+
                 # endregion
 
                 if not_benchmarking or benchmark_mode >= BenchmarkMode.RENDER:

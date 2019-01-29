@@ -1,6 +1,18 @@
 import warnings
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Type, Tuple, Optional, ClassVar, Callable, Union
+from typing import (
+    TYPE_CHECKING,
+    Type,
+    Tuple,
+    Optional,
+    ClassVar,
+    Callable,
+    Union,
+    NewType,
+    Sequence,
+    List,
+    Any,
+)
 
 import attr
 import numpy as np
@@ -101,11 +113,161 @@ class PerFrameCache:
     period: Optional[int] = None
     mean: Optional[float] = None
 
+    # Log-scaled spectrum
+    spectrum: "Optional[np.ndarray[FLOAT]]" = None
+
 
 # CorrelationTrigger
 
 
-class CorrelationTriggerConfig(ITriggerConfig):
+class SpectrumConfig(
+    KeywordAttrs,
+    always_dump="""
+    notes_per_octave
+    exponent
+    pitch_estimate_boost add_current_to_history max_octaves_to_resample
+    """,
+):
+    """
+    # Rationale:
+    If no basal frequency note-bands are to be truncated,
+    the spectrum must have freq resolution
+        `min_hz * (2 ** 1/notes_per_octave - 1)`.
+
+    At 20hz, 10 octaves, 12 notes/octave, this is 1.19Hz fftbins.
+    Our highest band must be
+        `min_hz * 2**octaves`,
+    leading to nearly 20K bins, which produces an somewhat slow FFT.
+
+    So increase min_hz and decrease octaves and notes_per_octave.
+    --------
+    Using a Constant-Q transform may eliminate performance concerns?
+    """
+
+    # Spectrum X density
+    min_hz: float = 40
+    octaves: int = 7
+    notes_per_octave: int = 6
+
+    # Spectrum Y power
+    exponent: float = 1
+    divide_by_freq: bool = True
+
+    # Spectral alignment and resampling
+    frames_between_recompute: int = 10
+    pitch_estimate_boost: float = 2
+    add_current_to_history: float = 0.1
+    max_octaves_to_resample: float = 2.0
+
+    @property
+    def max_notes_to_resample(self) -> int:
+        return round(self.notes_per_octave * self.max_octaves_to_resample)
+
+
+class DummySpectrum:
+    # noinspection PyMethodMayBeStatic,PyUnusedLocal
+    def calc_spectrum(self, data: np.ndarray) -> np.ndarray:
+        return np.array([])
+
+
+Bin = NewType("Bin", int)
+# Very hacky and weird. Maybe it's not worth getting mypy to pass.
+if TYPE_CHECKING:
+    BinArray = Any  # mypy
+else:
+    BinArray = "np.ndarray[Bin]"  # pycharm
+
+
+class LogFreqSpectrum(DummySpectrum):
+    """
+    Invariants:
+    - len(bin_fenceposts) == n_fencepost
+    - rfft()[first_bin:][bin_fenceposts] works.
+
+    FIXME confusion of "bin" and "note"
+    """
+
+    n_fencepost: int
+    bin_fenceposts: BinArray
+
+    def __init__(self, scfg: SpectrumConfig, subsmp_s: float, dummy_data: np.ndarray):
+        """
+        fenceposts_hz: Hz
+        fft:
+        - subsmp_s/N: Hz/fftbin
+        fenceposts_hz / (subsmp_s/N): fftbin
+        """
+
+        self.scfg = scfg
+
+        N = int(round(len(dummy_data))) - 1
+        N = signal.next_fast_len(N)
+        # Increase N until every bin/note has nonzero width.
+        while True:
+            # Compute parameters
+            self.min_hz = scfg.min_hz
+            self.max_hz = self.min_hz * 2 ** scfg.octaves
+            n_fencepost = scfg.notes_per_octave * scfg.octaves + 1
+
+            fenceposts_hz = np.geomspace(
+                self.min_hz, self.max_hz, n_fencepost, dtype=FLOAT
+            )
+
+            # Convert fenceposts to FFT bins
+            bin_fenceposts: BinArray = (fenceposts_hz / (subsmp_s / N)).astype(np.int32)
+            bin_diffs = np.diff(bin_fenceposts)
+
+            if np.any(bin_diffs == 0):
+                N = signal.next_fast_len(N + N // 5 + 1)
+                continue
+            else:
+                break
+
+        self.N = N  # Passed to rfft() to automatically zero-pad data.
+        self.bin_fenceposts = bin_fenceposts
+        self.n_fencepost = len(bin_fenceposts)
+
+    def calc_spectrum(self, data: np.ndarray) -> np.ndarray:
+        """ Unfortunately converting to FLOAT (single) adds too much overhead. """
+        scfg = self.scfg
+
+        # Compute FFT
+        spectrum = np.fft.rfft(data, self.N)
+        spectrum = abs(spectrum)
+        if scfg.exponent != 1:
+            spectrum **= scfg.exponent
+
+        # Compute energy bins
+        bins2d = split(spectrum, self.bin_fenceposts)
+
+        # np.add.reduce is much faster than np.sum/mean.
+        if scfg.divide_by_freq:
+            bins = np.array([np.add.reduce(region) / len(region) for region in bins2d])
+        else:
+            bins = np.array([np.add.reduce(region) for region in bins2d])
+
+        assert len(bins) <= self.n_fencepost - 1, (len(bins), self.n_fencepost - 1)
+        return bins
+
+
+def split(data: np.ndarray, fenceposts: Sequence[int]) -> List[np.ndarray]:
+    """ Based off np.split(), but faster.
+    Unlike np.split, does not include data before fenceposts[0]
+    or after fenceposts[-1]."""
+    sub_arys = []
+    ndata = len(data)
+    for i in range(len(fenceposts) - 1):
+        st = fenceposts[i]
+        end = fenceposts[i + 1]
+        if not st < ndata:
+            break
+        region = data[st:end]
+        sub_arys.append(region)
+
+    return sub_arys
+
+
+class CorrelationTriggerConfig(ITriggerConfig, always_dump="pitch_invariance"):
     # get_trigger
     edge_strength: float
     trigger_diameter: float = 0.5
@@ -117,6 +279,9 @@ class CorrelationTriggerConfig(ITriggerConfig):
     # _update_buffer
     responsiveness: float
     buffer_falloff: float  # Gaussian std = wave_period * buffer_falloff
+
+    # Pitch invariance = compute spectrum.
+    pitch_invariance: Optional["SpectrumConfig"] = None
 
     # region Legacy Aliases
     trigger_strength = Alias("edge_strength")
@@ -152,6 +317,10 @@ class CorrelationTriggerConfig(ITriggerConfig):
 class CorrelationTrigger(Trigger):
     cfg: CorrelationTriggerConfig
 
+    @property
+    def scfg(self) -> SpectrumConfig:
+        return self.cfg.pitch_invariance
+
     def __init__(self, *args, **kwargs):
         """
         Correlation-based trigger which looks at a window of `trigger_tsamp` samples.
@@ -180,6 +349,20 @@ class CorrelationTrigger(Trigger):
         # Will be overwritten on the first frame.
         self._prev_period: Optional[int] = None
         self._prev_window: Optional[np.ndarray] = None
+
+        # (mutable) Log-scaled spectrum
+        self.frames_since_spectrum = 0
+
+        if self.scfg:
+            self._spectrum_calc = LogFreqSpectrum(
+                scfg=self.scfg,
+                subsmp_s=self._wave.smp_s / self._stride,
+                dummy_data=self._buffer,
+            )
+            self._spectrum = self._spectrum_calc.calc_spectrum(self._buffer)
+        else:
+            self._spectrum_calc = DummySpectrum()
+            self._spectrum = np.array([0])
 
     def _calc_data_taper(self) -> np.ndarray:
         """ Input data window. Zeroes out all data older than 1 frame old.
@@ -242,6 +425,7 @@ class CorrelationTrigger(Trigger):
     # begin per-frame
     def get_trigger(self, index: int, cache: "PerFrameCache") -> int:
         N = self._buffer_nsamp
+        cfg = self.cfg
 
         # Get data
         stride = self._stride
@@ -253,10 +437,25 @@ class CorrelationTrigger(Trigger):
         period = get_period(data)
         cache.period = period * stride
 
-        if self._is_window_invalid(period):
-            diameter, falloff = [round(period * x) for x in self.cfg.trigger_falloff]
+        if (
+            self.scfg
+            and self.frames_since_spectrum >= self.scfg.frames_between_recompute
+        ):
+            self.spectrum_rescale_buffer(data, None)
+
+        semitones = self._is_window_invalid(period)
+        if semitones:
+            diameter, falloff = [round(period * x) for x in cfg.trigger_falloff]
             falloff_window = cosine_flat(N, diameter, falloff)
             window = np.minimum(falloff_window, self._data_taper)
+
+            # Rescale buffer to match data's pitch
+            if self.scfg and (data != 0).any():
+                if isinstance(semitones, float):
+                    peak_semitones = semitones
+                else:
+                    peak_semitones = None
+                self.spectrum_rescale_buffer(data, peak_semitones)
 
             self._prev_period = period
             self._prev_window = window
@@ -265,38 +464,13 @@ class CorrelationTrigger(Trigger):
 
         data *= window
 
-        # prev_buffer
-        prev_buffer = self._windowed_step + self._buffer
+        prev_buffer: np.ndarray = self._buffer.copy()
+        prev_buffer += self._windowed_step
 
         # Calculate correlation
-        """
-        If offset < optimal, we need to `offset += positive`.
-        - The peak will appear near the right of `data`.
-
-        Either we must slide prev_buffer to the right:
-        - correlate(data, prev_buffer)
-        - trigger = offset + peak_offset
-
-        Or we must slide data to the left (by sliding offset to the right):
-        - correlate(prev_buffer, data)
-        - trigger = offset - peak_offset
-        """
-        corr = signal.correlate(data, prev_buffer)  # returns double, not single/FLOAT
-        assert len(corr) == 2 * N - 1
-
-        # Find optimal offset (within trigger_diameter, default=±N/4)
-        mid = N - 1
+        # radius defaults to ±N / 4
         radius = round(N * self.cfg.trigger_diameter / 2)
-
-        left = mid - radius
-        right = mid + radius + 1
-
-        corr = corr[left:right]
-        mid = mid - left
-
-        # argmax(corr) == mid + peak_offset == (data >> peak_offset)
-        # peak_offset == argmax(corr) - mid
-        peak_offset = np.argmax(corr) - mid  # type: int
+        peak_offset = self.correlate_offset(data, prev_buffer, radius)
         trigger = index + (stride * peak_offset)
 
         # Apply post trigger (before updating correlation buffer)
@@ -306,11 +480,117 @@ class CorrelationTrigger(Trigger):
         # Update correlation buffer (distinct from visible area)
         aligned = self._wave.get_around(trigger, self._buffer_nsamp, stride)
         self._update_buffer(aligned, cache)
+        self.frames_since_spectrum += 1
 
         return trigger
 
-    def _is_window_invalid(self, period: int) -> bool:
-        """ Returns True if pitch has changed more than `recalc_semitones`. """
+    def spectrum_rescale_buffer(
+        self, data: np.ndarray, peak_semitones: Optional[float]
+    ) -> None:
+        """Rewrites self._spectrum, and possibly rescales self._buffer."""
+
+        scfg = self.scfg
+        N = self._buffer_nsamp
+
+        if self.frames_since_spectrum == 0:
+            return
+        self.frames_since_spectrum = 0
+
+        spectrum = self._spectrum_calc.calc_spectrum(data)
+        normalize_buffer(spectrum)
+
+        # Don't normalize now. It was already normalized when being assigned.
+        prev_spectrum = self._spectrum
+        prev_spectrum += scfg.add_current_to_history * spectrum
+
+        # rewrite spectrum
+        self._spectrum = spectrum
+
+        assert not np.any(np.isnan(spectrum))
+
+        # Fails if data/spectrum is all-0, if spectrum[?:?] is all-0, etc.
+        # Let's not run it at all.
+        # autocorrelate = self.correlate_offset(
+        #     spectrum, spectrum, scfg.max_notes_to_resample
+        # )
+        # assert autocorrelate == 0, autocorrelate
+
+        # Find spectral correlation peak,
+        # but prioritize "changing pitch by ???".
+        if peak_semitones is not None:
+            boost_x = int(round(peak_semitones / 12 * scfg.notes_per_octave))
+            boost_y: float = scfg.pitch_estimate_boost
+        else:
+            boost_x = 0
+            boost_y = 1.0
+
+        # If we want to double pitch...
+        resample_notes = self.correlate_offset(
+            spectrum,
+            prev_spectrum,
+            scfg.max_notes_to_resample,
+            boost_x=boost_x,
+            boost_y=boost_y,
+        )
+        # if "1-" in self._wave.wave_path:
+        #     print(
+        #         f"shift {peak_semitones}, boost[{boost_x}]*={boost_y}, d={resample_notes}"
+        #     )
+        if resample_notes != 0:
+            # we must divide sampling rate by 2.
+            new_len = int(round(N / 2 ** (resample_notes / scfg.notes_per_octave)))
+
+            # Copy+resample self._buffer.
+            self._buffer = np.interp(
+                np.linspace(0, 1, new_len), np.linspace(0, 1, N), self._buffer
+            )
+            # assert len(self._buffer) == new_len
+            self._buffer = midpad(self._buffer, N)
+
+    @staticmethod
+    def correlate_offset(
+        data: np.ndarray,
+        prev_buffer: np.ndarray,
+        radius: int,
+        boost_x: int = 0,
+        boost_y: float = 1.0,
+    ) -> int:
+        """
+        This is confusing.
+
+        If data index < optimal, data will be too far to the right,
+        and we need to `index += positive`.
+        - The peak will appear near the right of `data`.
+
+        Either we must slide prev_buffer to the right,
+        or we must slide data to the left (by sliding index to the right):
+        - correlate(data, prev_buffer)
+        - trigger = index + peak_offset
+        """
+        N = len(data)
+        corr = signal.correlate(data, prev_buffer)  # returns double, not single/FLOAT
+        Ncorr = 2 * N - 1
+        assert len(corr) == Ncorr
+
+        # Find optimal offset
+        mid = N - 1
+        left = max(mid - radius, 0)
+        right = min(mid + radius + 1, Ncorr)
+
+        corr = corr[left:right]
+        mid = mid - left
+
+        # Prioritize part of it.
+        corr[mid + boost_x : mid + boost_x + 1] *= boost_y
+
+        # argmax(corr) == mid + peak_offset == (data >> peak_offset)
+        # peak_offset == argmax(corr) - mid
+        peak_offset = np.argmax(corr) - mid  # type: int
+        return peak_offset
+
+    def _is_window_invalid(self, period: int) -> Union[bool, float, None]:
+        """ Returns number of semitones,
+        if pitch has changed more than `recalc_semitones`. """
 
         prev = self._prev_period
 
@@ -319,12 +599,12 @@ class CorrelationTrigger(Trigger):
         elif prev * period == 0:
             return prev != period
         else:
-            semitones = abs(np.log(period / prev) / np.log(2) * 12)
-
+            # If period doubles, semitones are -12.
+            semitones = np.log(period / prev) / np.log(2) * -12
             # If semitones == recalc_semitones == 0, do NOT recalc.
-            if semitones <= self.cfg.recalc_semitones:
-                return False
-            return True
+            if abs(semitones) <= self.cfg.recalc_semitones:
+                return None
+            return semitones
 
     def _update_buffer(self, data: np.ndarray, cache: PerFrameCache) -> None:
         """
