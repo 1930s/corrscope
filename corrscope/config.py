@@ -115,6 +115,8 @@ def copy_config(obj: T) -> T:
 class DumpableAttrs:
     """ Marks class as attrs, and enables YAML dumping (excludes default fields). """
 
+    # TODO fix loading frozen from YAML
+
     __always_dump: ClassVar[Set[str]]
 
     if TYPE_CHECKING:
@@ -122,11 +124,11 @@ class DumpableAttrs:
         def __init__(self, *args, **kwargs):
             pass
 
-    def __init_subclass__(cls, kw_only: bool = False, always_dump: str = ""):
+    def __init_subclass__(cls, kw_only: bool = False, always_dump: str = "", **kwargs):
         cls.__always_dump = set(always_dump.split())
         del always_dump
 
-        _yaml_loadable(attr.dataclass(cls, kw_only=kw_only))
+        _yaml_loadable(attr.dataclass(cls, kw_only=kw_only, **kwargs))
 
         dump_fields = cls.__always_dump - {"*"}  # remove "*" if exists
         if "*" in cls.__always_dump:
