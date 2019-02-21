@@ -155,9 +155,9 @@ class SpectrumConfig(
 
     # Spectral alignment and resampling
     frames_between_recompute: int = 10
-    pitch_estimate_boost: float = 2
+    pitch_estimate_boost: float = 1.2
     add_current_to_history: float = 0.1
-    max_octaves_to_resample: float = 2.0
+    max_octaves_to_resample: float = 1.0
 
     @property
     def max_notes_to_resample(self) -> int:
