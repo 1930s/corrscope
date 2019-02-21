@@ -1,9 +1,12 @@
+from typing import Optional
+
 import attr
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from pytest_cases import pytest_fixture_plus
 
 from corrscope import triggers
 from corrscope.triggers import (
@@ -12,6 +15,7 @@ from corrscope.triggers import (
     PerFrameCache,
     ZeroCrossingTriggerConfig,
     LocalPostTriggerConfig,
+    SpectrumConfig,
 )
 from corrscope.wave import Wave
 
@@ -26,10 +30,13 @@ def cfg_template(**kwargs) -> CorrelationTriggerConfig:
     return attr.evolve(cfg, **kwargs)
 
 
-@pytest.fixture(scope="session", params=[False, True])
-def cfg(request):
-    use_edge_trigger = request.param
-    return cfg_template(use_edge_trigger=use_edge_trigger)
+@pytest_fixture_plus
+@pytest.mark.parametrize("use_edge_trigger", [False, True])
+@pytest.mark.parametrize("pitch_invariance", [None, SpectrumConfig()])
+def cfg(use_edge_trigger: bool, pitch_invariance: Optional[SpectrumConfig]):
+    return cfg_template(
+        use_edge_trigger=use_edge_trigger, pitch_invariance=pitch_invariance
+    )
 
 
 @pytest.fixture(
