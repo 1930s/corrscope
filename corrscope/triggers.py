@@ -145,8 +145,8 @@ class SpectrumConfig(
     """
 
     # Spectrum X density
-    min_hz: float = 40
-    octaves: int = 7
+    min_hz: float = 20
+    octaves: int = 8
     notes_per_octave: int = 6
 
     # Spectrum Y power
