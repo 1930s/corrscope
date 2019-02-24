@@ -154,6 +154,7 @@ class SpectrumConfig(
     divide_by_freq: bool = True
 
     # Spectral alignment and resampling
+    min_frames_between_recompute: int = 6
     frames_to_lookbehind: int = 2
     pitch_estimate_boost: float = 1.2
     add_current_to_history: float = 0.1  # FIXME why does this exist?
@@ -513,7 +514,7 @@ class CorrelationTrigger(Trigger):
         scfg = self.scfg
         N = self._buffer_nsamp
 
-        if self.frames_since_spectrum == 0:
+        if self.frames_since_spectrum < self.scfg.min_frames_between_recompute:
             return
         self.frames_since_spectrum = 0
 
