@@ -122,11 +122,11 @@ class PerFrameCache:
 
 class SpectrumConfig(
     KeywordAttrs,
-    always_dump="""
-    notes_per_octave
-    exponent
-    pitch_estimate_boost add_current_to_history max_octaves_to_resample
-    """,
+    # always_dump="""
+    # notes_per_octave
+    # exponent
+    # pitch_estimate_boost add_current_to_history max_octaves_to_resample
+    # """,
 ):
     """
     # Rationale:
@@ -154,8 +154,6 @@ class SpectrumConfig(
     divide_by_freq: bool = True
 
     # Spectral alignment and resampling
-    min_frames_between_recompute: int = 6
-    frames_to_lookbehind: int = 2
     pitch_estimate_boost: float = 1.2
     add_current_to_history: float = 0.1  # FIXME why does this exist?
     max_octaves_to_resample: float = 1.0
@@ -163,6 +161,10 @@ class SpectrumConfig(
     @property
     def max_notes_to_resample(self) -> int:
         return round(self.notes_per_octave * self.max_octaves_to_resample)
+
+    # Time-domain history parameters
+    min_frames_between_recompute: int = 6
+    frames_to_lookbehind: int = 2
 
 
 class DummySpectrum:
