@@ -511,13 +511,6 @@ class CorrelationTrigger(Trigger):
 
         assert not np.any(np.isnan(spectrum))
 
-        # Fails if data/spectrum is all-0, if spectrum[?:?] is all-0, etc.
-        # Let's not run it at all.
-        # autocorrelate = self.correlate_offset(
-        #     spectrum, spectrum, scfg.max_notes_to_resample
-        # )
-        # assert autocorrelate == 0, autocorrelate
-
         # Find spectral correlation peak,
         # but prioritize "changing pitch by ???".
         if peak_semitones is not None:
@@ -535,10 +528,6 @@ class CorrelationTrigger(Trigger):
             boost_x=boost_x,
             boost_y=boost_y,
         )
-        # if "1-" in self._wave.wave_path:
-        #     print(
-        #         f"shift {peak_semitones}, boost[{boost_x}]*={boost_y}, d={resample_notes}"
-        #     )
         if resample_notes != 0:
             # we must divide sampling rate by 2.
             new_len = int(round(N / 2 ** (resample_notes / scfg.notes_per_octave)))
