@@ -582,7 +582,7 @@ class CorrelationTrigger(Trigger):
         peak_offset = np.argmax(corr) - mid  # type: int
         return peak_offset
 
-    def _is_window_invalid(self, period: int) -> Union[bool, float, None]:
+    def _is_window_invalid(self, period: int) -> Union[bool, float]:
         """ Returns number of semitones,
         if pitch has changed more than `recalc_semitones`. """
 
@@ -597,7 +597,7 @@ class CorrelationTrigger(Trigger):
             semitones = np.log(period / prev) / np.log(2) * -12
             # If semitones == recalc_semitones == 0, do NOT recalc.
             if abs(semitones) <= self.cfg.recalc_semitones:
-                return None
+                return False
             return semitones
 
     def _update_buffer(self, data: np.ndarray, cache: PerFrameCache) -> None:
