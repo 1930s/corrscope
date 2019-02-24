@@ -154,7 +154,7 @@ class SpectrumConfig(
     divide_by_freq: bool = True
 
     # Spectral alignment and resampling
-    frames_between_recompute: int = 10
+    frames_to_lookbehind: int = 2
     pitch_estimate_boost: float = 1.2
     add_current_to_history: float = 0.1  # FIXME why does this exist?
     max_octaves_to_resample: float = 1.0
@@ -267,6 +267,24 @@ def split(data: np.ndarray, fenceposts: Sequence[int]) -> List[np.ndarray]:
     return sub_arys
 
 
+class CircularArray:
+    def __init__(self, size: int, *dims: int):
+        self.size = size
+        self.buf = np.zeros((size, *dims))
+        self.index = 0
+
+    def push(self, arr: np.ndarray) -> None:
+        if self.size == 0:
+            return
+        self.buf[self.index] = arr
+        self.index = (self.index + 1) % self.size
+
+    def peek(self) -> np.ndarray:
+        """Return is borrowed from self.buf.
+        Do NOT push to self while borrow is alive."""
+        return self.buf[self.index]
+
+
 class CorrelationTriggerConfig(ITriggerConfig, always_dump="pitch_invariance"):
     # get_trigger
     edge_strength: float
@@ -360,9 +378,13 @@ class CorrelationTrigger(Trigger):
                 dummy_data=self._buffer,
             )
             self._spectrum = self._spectrum_calc.calc_spectrum(self._buffer)
+            self.history = CircularArray(
+                self.scfg.frames_to_lookbehind, self._buffer_nsamp
+            )
         else:
             self._spectrum_calc = DummySpectrum()
             self._spectrum = np.array([0])
+            self.history = CircularArray(0, self._buffer_nsamp)
 
     def _calc_data_taper(self) -> np.ndarray:
         """ Input data window. Zeroes out all data older than 1 frame old.
@@ -437,19 +459,14 @@ class CorrelationTrigger(Trigger):
         period = get_period(data)
         cache.period = period * stride
 
-        if (
-            self.scfg
-            and self.frames_since_spectrum >= self.scfg.frames_between_recompute
-        ):
-            self.spectrum_rescale_buffer(data, None)
-
         semitones = self._is_window_invalid(period)
+        # If pitch changed...
         if semitones:
             diameter, falloff = [round(period * x) for x in cfg.trigger_falloff]
             falloff_window = cosine_flat(N, diameter, falloff)
             window = np.minimum(falloff_window, self._data_taper)
 
-            # Rescale buffer to match data's pitch
+            # If pitch invariance enabled, rescale buffer to match data's pitch.
             if self.scfg and (data != 0).any():
                 if isinstance(semitones, float):
                     peak_semitones = semitones
@@ -462,6 +479,7 @@ class CorrelationTrigger(Trigger):
         else:
             window = self._prev_window
 
+        self.history.push(data)
         data *= window
 
         prev_buffer: np.ndarray = self._buffer.copy()
@@ -502,8 +520,8 @@ class CorrelationTrigger(Trigger):
         spectrum = self._spectrum_calc.calc_spectrum(data)
         normalize_buffer(spectrum)
 
-        # Don't normalize now. It was already normalized when being assigned.
-        prev_spectrum = self._spectrum
+        # Don't normalize self._spectrum. It was already normalized when being assigned.
+        prev_spectrum = self._spectrum_calc.calc_spectrum(self.history.peek())
         prev_spectrum += scfg.add_current_to_history * spectrum
 
         # rewrite spectrum
