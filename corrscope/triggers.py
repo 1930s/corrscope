@@ -270,7 +270,7 @@ def split(data: np.ndarray, fenceposts: Sequence[int]) -> List[np.ndarray]:
 class CorrelationTriggerConfig(ITriggerConfig, always_dump="pitch_invariance"):
     # get_trigger
     edge_strength: float
-    trigger_diameter: float = 0.5
+    trigger_diameter: Optional[float] = None
 
     trigger_falloff: Tuple[float, float] = (4.0, 1.0)
     recalc_semitones: float = 1.0
@@ -468,8 +468,11 @@ class CorrelationTrigger(Trigger):
         prev_buffer += self._windowed_step
 
         # Calculate correlation
-        # radius defaults to ±N / 4
-        radius = round(N * self.cfg.trigger_diameter / 2)
+        if self.cfg.trigger_diameter is not None:
+            radius = round(N * self.cfg.trigger_diameter / 2)
+        else:
+            radius = None
+
         peak_offset = self.correlate_offset(data, prev_buffer, radius)
         trigger = index + (stride * peak_offset)
 
@@ -551,7 +554,7 @@ class CorrelationTrigger(Trigger):
     def correlate_offset(
         data: np.ndarray,
         prev_buffer: np.ndarray,
-        radius: int,
+        radius: Optional[int],
         boost_x: int = 0,
         boost_y: float = 1.0,
     ) -> int:
@@ -574,11 +577,13 @@ class CorrelationTrigger(Trigger):
 
         # Find optimal offset
         mid = N - 1
-        left = max(mid - radius, 0)
-        right = min(mid + radius + 1, Ncorr)
 
-        corr = corr[left:right]
-        mid = mid - left
+        if radius is not None:
+            left = max(mid - radius, 0)
+            right = min(mid + radius + 1, Ncorr)
+
+            corr = corr[left:right]
+            mid = mid - left
 
         # Prioritize part of it.
         corr[mid + boost_x : mid + boost_x + 1] *= boost_y

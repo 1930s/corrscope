@@ -32,10 +32,13 @@ def cfg_template(**kwargs) -> CorrelationTriggerConfig:
 
 @pytest_fixture_plus
 @pytest.mark.parametrize("use_edge_trigger", [False, True])
+@pytest.mark.parametrize("trigger_diameter", [None, 0.5])
 @pytest.mark.parametrize("pitch_invariance", [None, SpectrumConfig()])
-def cfg(use_edge_trigger: bool, pitch_invariance: Optional[SpectrumConfig]):
+def cfg(use_edge_trigger, trigger_diameter, pitch_invariance):
     return cfg_template(
-        use_edge_trigger=use_edge_trigger, pitch_invariance=pitch_invariance
+        use_edge_trigger=use_edge_trigger,
+        trigger_diameter=trigger_diameter,
+        pitch_invariance=pitch_invariance,
     )
 
 
@@ -208,8 +211,9 @@ def test_correlate_offset():
     right = wave[40]
 
     # We need to slide `left` to the right by 10 samples, and vice versa.
-    assert correlate_offset(data=left, prev_buffer=right, radius=12) == 10
-    assert correlate_offset(data=right, prev_buffer=left, radius=12) == -10
+    for radius in [None, 12]:
+        assert correlate_offset(data=left, prev_buffer=right, radius=radius) == 10
+        assert correlate_offset(data=right, prev_buffer=left, radius=radius) == -10
 
     # The correlation peak at zero-offset is small enough for boost_x to be returned.
     boost_y = 1.5
