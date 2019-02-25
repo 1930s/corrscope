@@ -113,9 +113,6 @@ class PerFrameCache:
     period: Optional[int] = None
     mean: Optional[float] = None
 
-    # Log-scaled spectrum
-    spectrum: "Optional[np.ndarray[FLOAT]]" = None
-
 
 # CorrelationTrigger
 
